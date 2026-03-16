@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#09090b" />
+    <meta name="background-color" content="#09090b" />
+    <meta name="description" content="F1 Live Data Dashboard — Real-time race data, standings, lap times, and fantasy predictions powered by OpenF1 API" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="F1 LIVE" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta property="og:title" content="F1 LIVE — Data Dashboard" />
+    <meta property="og:description" content="Real-time F1 race data, standings, fantasy predictions" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/icons/icon-512.png" />
+    <title>F1 LIVE — Data Dashboard</title>
+    <style>
+      body { margin: 0; background: #09090b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      #splash { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; background: #09090b; z-index: 9999; transition: opacity 0.3s; }
+      #splash.hide { opacity: 0; pointer-events: none; }
+      #splash .title { display: flex; align-items: center; gap: 12px; }
+      #splash .bar { width: 8px; height: 32px; background: #e8002d; border-radius: 2px; }
+      #splash h1 { color: #fff; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; margin: 0; }
+      #splash .sub { color: #52525b; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+      #splash .loader { width: 28px; height: 28px; border: 3px solid #27272a; border-top-color: #e8002d; border-radius: 50%; animation: spin 0.7s linear infinite; margin-top: 24px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div id="splash">
+      <div class="title"><div class="bar"></div><h1>F1 LIVE</h1></div>
+      <div class="sub">Data Dashboard</div>
+      <div class="loader"></div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      const observer = new MutationObserver(() => {
+        const root = document.getElementById('root');
+        if (root && root.children.length > 0) {
+          const splash = document.getElementById('splash');
+          if (splash) { splash.classList.add('hide'); setTimeout(() => splash.remove(), 300); }
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.getElementById('root'), { childList: true });
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then(r => console.log('SW registered:', r.scope)).catch(e => console.log('SW failed:', e));
+        });
+      }
+    </script>
+  </body>
+</html>
