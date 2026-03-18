@@ -862,6 +862,396 @@ function FantasyPredictor() {
   );
 }
 
+// ---- Destructors Championship ----
+
+// Damage cost estimates (USD) based on incident type
+const DAMAGE_COSTS = {
+  // Race control flag/message keywords → estimated cost
+  retirement: 2000000,         // Full retirement / DNF
+  collision: 1500000,          // Car-to-car collision
+  crash: 1800000,              // Single car crash into barrier
+  spun: 400000,                // Spin (possible floor/diffuser damage)
+  off_track: 200000,           // Went off track
+  front_wing: 300000,          // Front wing damage
+  rear_wing: 350000,           // Rear wing damage
+  puncture: 150000,            // Tire puncture
+  mechanical: 500000,          // Mechanical failure
+  gearbox: 600000,             // Gearbox issue
+  engine: 800000,              // Engine/PU failure
+  power_unit: 1200000,         // Full PU replacement
+  hydraulic: 400000,           // Hydraulic failure
+  brake: 350000,               // Brake failure
+  suspension: 500000,          // Suspension damage
+  drs: 100000,                 // DRS failure
+  fire: 1500000,               // Car fire
+  stopped: 700000,             // Car stopped on track
+  barrier: 1800000,            // Hit barrier
+  wall: 1600000,               // Hit wall
+  gravel: 300000,              // Stuck in gravel
+  unsafe_release: 50000,       // Unsafe pit release (penalty, not damage)
+  black_and_white: 0,          // Warning flag
+  penalty: 0,                  // Time penalty (no physical damage)
+};
+
+function classifyIncident(message) {
+  const msg = (message || "").toLowerCase();
+  let totalCost = 0;
+  let types = [];
+
+  // Check for keywords in priority order (most expensive first)
+  const checks = [
+    { keywords: ["fire"], cost: DAMAGE_COSTS.fire, label: "Car fire" },
+    { keywords: ["barrier", "hit the barrier", "into the barrier"], cost: DAMAGE_COSTS.barrier, label: "Barrier impact" },
+    { keywords: ["wall", "hit the wall", "into the wall"], cost: DAMAGE_COSTS.wall, label: "Wall impact" },
+    { keywords: ["power unit", "pu failure"], cost: DAMAGE_COSTS.power_unit, label: "Power unit failure" },
+    { keywords: ["retired", "retirement", "out of the race", "will not"], cost: DAMAGE_COSTS.retirement, label: "Retirement (DNF)" },
+    { keywords: ["crash", "crashed", "heavy impact", "big crash"], cost: DAMAGE_COSTS.crash, label: "Crash" },
+    { keywords: ["collision", "collided", "contact between", "contact with"], cost: DAMAGE_COSTS.collision, label: "Collision" },
+    { keywords: ["engine", "engine failure"], cost: DAMAGE_COSTS.engine, label: "Engine failure" },
+    { keywords: ["stopped", "car stopped", "stopped on track"], cost: DAMAGE_COSTS.stopped, label: "Car stopped" },
+    { keywords: ["gearbox"], cost: DAMAGE_COSTS.gearbox, label: "Gearbox failure" },
+    { keywords: ["suspension", "broken suspension"], cost: DAMAGE_COSTS.suspension, label: "Suspension damage" },
+    { keywords: ["mechanical", "technical"], cost: DAMAGE_COSTS.mechanical, label: "Mechanical failure" },
+    { keywords: ["spun", "spin", "spinning", "lost control"], cost: DAMAGE_COSTS.spun, label: "Spin" },
+    { keywords: ["hydraulic"], cost: DAMAGE_COSTS.hydraulic, label: "Hydraulic failure" },
+    { keywords: ["brake", "brakes"], cost: DAMAGE_COSTS.brake, label: "Brake failure" },
+    { keywords: ["front wing"], cost: DAMAGE_COSTS.front_wing, label: "Front wing damage" },
+    { keywords: ["rear wing"], cost: DAMAGE_COSTS.rear_wing, label: "Rear wing damage" },
+    { keywords: ["puncture"], cost: DAMAGE_COSTS.puncture, label: "Puncture" },
+    { keywords: ["off track", "off the track", "wide", "run off"], cost: DAMAGE_COSTS.off_track, label: "Off track" },
+    { keywords: ["gravel"], cost: DAMAGE_COSTS.gravel, label: "Stuck in gravel" },
+    { keywords: ["drs"], cost: DAMAGE_COSTS.drs, label: "DRS failure" },
+  ];
+
+  for (const check of checks) {
+    if (check.keywords.some(kw => msg.includes(kw))) {
+      totalCost += check.cost;
+      types.push(check.label);
+      break; // Take the first (most severe) match only
+    }
+  }
+
+  return { cost: totalCost, types };
+}
+
+function formatCost(cost) {
+  if (cost >= 1000000) return `$${(cost / 1000000).toFixed(1)}M`;
+  if (cost >= 1000) return `$${(cost / 1000).toFixed(0)}K`;
+  return `$${cost}`;
+}
+
+function DestructorsChampionship() {
+  const [incidents, setIncidents] = useState([]);
+  const [drivers, setDrivers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("leaderboard");
+
+  useEffect(() => {
+    async function load() {
+      // Get 2026 meetings, fallback to 2025
+      let meetings = await f1Fetch("meetings", { year: 2026 });
+      if (!meetings.length) meetings = await f1Fetch("meetings", { year: 2025 });
+
+      let allIncidents = [];
+      let latestDrivers = [];
+      const seenIncidents = new Set(); // Deduplicate
+
+      for (const m of meetings) {
+        const sessions = await f1Fetch("sessions", { meeting_key: m.meeting_key });
+
+        for (const sess of sessions) {
+          const raceControl = await f1Fetch("race_control", { session_key: sess.session_key });
+          const drvs = await f1Fetch("drivers", { session_key: sess.session_key });
+          if (!latestDrivers.length && drvs.length) latestDrivers = drvs;
+
+          // 1. Scan ALL race control messages with a driver number
+          raceControl.forEach(rc => {
+            if (!rc.driver_number) return;
+            const msg = (rc.message || "").toLowerCase();
+
+            // Skip purely administrative messages
+            if (msg.includes("deleted lap") || msg.includes("track limits") ||
+                msg.includes("weighing") || msg.includes("pit entry") ||
+                msg.includes("pit exit") || msg.includes("chequered flag") ||
+                msg.includes("green light") || msg.includes("clear")) return;
+
+            const { cost, types } = classifyIncident(rc.message);
+            
+            // Also catch flags that indicate an incident even if message doesn't match keywords
+            let flagCost = 0;
+            let flagType = "";
+            if (cost === 0) {
+              if (rc.flag === "YELLOW" || rc.flag === "DOUBLE YELLOW") {
+                // Yellow flag caused by this driver = some kind of incident
+                flagCost = 200000;
+                flagType = "Caused yellow flag";
+              } else if (rc.flag === "RED" && rc.driver_number) {
+                flagCost = 1000000;
+                flagType = "Caused red flag";
+              }
+              // Check for additional keywords that suggest damage
+              if (msg.includes("dnf") || msg.includes("did not finish")) { flagCost = 1500000; flagType = "DNF"; }
+              if (msg.includes("dns") || msg.includes("did not start")) { flagCost = 500000; flagType = "DNS (mechanical)"; }
+              if (msg.includes("pit lane") && msg.includes("retire")) { flagCost = 700000; flagType = "Retired in pit lane"; }
+              if (msg.includes("smoke")) { flagCost = 800000; flagType = "Car smoking"; }
+              if (msg.includes("damage")) { flagCost = 500000; flagType = "Car damage"; }
+              if (msg.includes("lock") || msg.includes("locked")) { flagCost = 100000; flagType = "Lock-up"; }
+            }
+
+            const finalCost = cost || flagCost;
+            const finalTypes = types.length ? types : (flagType ? [flagType] : []);
+
+            if (finalCost > 0) {
+              const key = `${rc.driver_number}-${sess.session_key}-${finalTypes[0] || "incident"}`;
+              if (!seenIncidents.has(key)) {
+                seenIncidents.add(key);
+                allIncidents.push({
+                  driver_number: rc.driver_number,
+                  message: rc.message || `${rc.flag} flag`,
+                  date: rc.date,
+                  flag: rc.flag,
+                  cost: finalCost,
+                  types: finalTypes,
+                  race: m.meeting_name || m.country_name || "Unknown GP",
+                  session: sess.session_name || "Session",
+                  session_key: sess.session_key,
+                });
+              }
+            }
+          });
+
+          // 2. Detect DNFs from position data (drivers who disappeared from timing)
+          const isRace = (sess.session_name || "").toLowerCase().includes("race");
+          if (isRace) {
+            const positions = await f1Fetch("position", { session_key: sess.session_key });
+            const laps = await f1Fetch("laps", { session_key: sess.session_key });
+
+            // Find max lap in session
+            const maxLap = laps.reduce((max, l) => Math.max(max, l.lap_number || 0), 0);
+
+            // Get last seen lap per driver
+            const lastLap = {};
+            laps.forEach(l => {
+              if (!lastLap[l.driver_number] || l.lap_number > lastLap[l.driver_number])
+                lastLap[l.driver_number] = l.lap_number;
+            });
+
+            // Any driver whose last lap is significantly before the end = likely DNF
+            const allDriverNums = [...new Set(laps.map(l => l.driver_number))];
+            allDriverNums.forEach(dn => {
+              const dl = lastLap[dn] || 0;
+              if (maxLap > 5 && dl < maxLap - 3) {
+                const key = `${dn}-${sess.session_key}-DNF-position`;
+                if (!seenIncidents.has(key)) {
+                  seenIncidents.add(key);
+                  // Check if we already have a race_control incident for this driver
+                  const existingIncident = allIncidents.find(
+                    inc => inc.driver_number === dn && inc.session_key === sess.session_key
+                  );
+                  if (!existingIncident) {
+                    // No race control message found, add as detected DNF
+                    allIncidents.push({
+                      driver_number: dn,
+                      message: `Retired from race (last seen lap ${dl}/${maxLap})`,
+                      date: null,
+                      flag: null,
+                      cost: dl < 2 ? 2000000 : dl < 10 ? 1500000 : 800000, // Earlier = probably worse
+                      types: [dl < 2 ? "DNS / Formation lap crash" : "Retirement (DNF)"],
+                      race: m.meeting_name || m.country_name || "Unknown GP",
+                      session: sess.session_name || "Race",
+                      session_key: sess.session_key,
+                    });
+                  }
+                }
+              }
+            });
+          }
+        }
+      }
+
+      setIncidents(allIncidents);
+      setDrivers(latestDrivers);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  if (loading) return <LoadingPulse text="Tallying the destruction..." />;
+
+  const driverMap = {};
+  drivers.forEach(d => driverMap[d.driver_number] = d);
+
+  // Aggregate costs per driver
+  const driverCosts = {};
+  incidents.forEach(inc => {
+    const dn = inc.driver_number;
+    if (!driverCosts[dn]) driverCosts[dn] = { total: 0, incidents: [], races: new Set() };
+    driverCosts[dn].total += inc.cost;
+    driverCosts[dn].incidents.push(inc);
+    driverCosts[dn].races.add(inc.race);
+  });
+
+  const leaderboard = Object.entries(driverCosts)
+    .map(([dn, data]) => {
+      const num = parseInt(dn);
+      const d = driverMap[num] || {};
+      const fp = FANTASY_PRICES[num];
+      return {
+        driver_number: num,
+        name: d.full_name || fp?.name || d.name_acronym || `#${num}`,
+        acronym: d.name_acronym || `#${num}`,
+        team: d.team_name || fp?.team || "Unknown",
+        teamColor: TEAM_COLORS[d.team_name || fp?.team] || `#${d.team_colour || "888"}`,
+        total: data.total,
+        incidentCount: data.incidents.length,
+        races: data.races.size,
+        incidents: data.incidents,
+      };
+    })
+    .sort((a, b) => b.total - a.total);
+
+  const maxCost = leaderboard.length ? leaderboard[0].total : 1;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <Tab label="Leaderboard" active={view === "leaderboard"} onClick={() => setView("leaderboard")} />
+        <Tab label="Incident Log" active={view === "log"} onClick={() => setView("log")} />
+      </div>
+
+      {view === "leaderboard" ? (
+        <Card title="Destructors Championship">
+          {leaderboard.length === 0 ? (
+            <div style={{ padding: 20, textAlign: "center" }}>
+              <p style={{ fontSize: 40, marginBottom: 8 }}>💥</p>
+              <p style={{ color: "#888", fontSize: 13 }}>No incidents recorded yet. Check back after race sessions!</p>
+            </div>
+          ) : (
+            <>
+              {/* Top destructor highlight */}
+              {leaderboard.length > 0 && (
+                <div style={{
+                  textAlign: "center", padding: "20px 0", marginBottom: 16,
+                  borderBottom: "1px solid #27272a",
+                }}>
+                  <div style={{ fontSize: 40, marginBottom: 4 }}>💥</div>
+                  <div style={{ fontSize: 10, color: "#71717a", textTransform: "uppercase", letterSpacing: 2, marginBottom: 6 }}>
+                    Chief Destructor
+                  </div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: "#f4f4f5" }}>
+                    {leaderboard[0].name}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#71717a", marginBottom: 8 }}>{leaderboard[0].team}</div>
+                  <div style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 28, fontWeight: 800,
+                    color: "#ef4444",
+                  }}>
+                    {formatCost(leaderboard[0].total)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#71717a", marginTop: 4 }}>
+                    {leaderboard[0].incidentCount} incident{leaderboard[0].incidentCount !== 1 ? "s" : ""} across {leaderboard[0].races} race{leaderboard[0].races !== 1 ? "s" : ""}
+                  </div>
+                </div>
+              )}
+
+              {/* Full leaderboard */}
+              {leaderboard.map((d, i) => (
+                <div key={d.driver_number} style={{
+                  display: "flex", alignItems: "center", gap: 12, padding: "10px 0",
+                  borderBottom: i < leaderboard.length - 1 ? "1px solid #27272a" : "none",
+                }}>
+                  <span style={{
+                    width: 28, fontWeight: 800, fontSize: 15, textAlign: "right",
+                    color: i === 0 ? "#ef4444" : i < 3 ? "#f97316" : "#888",
+                  }}>
+                    {i + 1}
+                  </span>
+                  <TeamBar color={d.teamColor} />
+                  <div style={{ width: 50 }}>
+                    <div style={{ fontWeight: 700, color: "#f4f4f5", fontSize: 13 }}>{d.acronym}</div>
+                    <div style={{ fontSize: 9, color: "#52525b" }}>{d.team}</div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ height: 6, borderRadius: 3, background: "#2a2a2e", overflow: "hidden" }}>
+                      <div style={{
+                        width: `${(d.total / maxCost) * 100}%`, height: "100%", borderRadius: 3,
+                        background: i === 0 ? "#ef4444" : i < 3 ? "#f97316" : "#52525b",
+                        transition: "width 0.5s",
+                      }} />
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", minWidth: 70 }}>
+                    <div style={{
+                      fontFamily: "monospace", fontWeight: 700, fontSize: 13,
+                      color: i === 0 ? "#ef4444" : i < 3 ? "#f97316" : "#d4d4d8",
+                    }}>
+                      {formatCost(d.total)}
+                    </div>
+                    <div style={{ fontSize: 9, color: "#52525b" }}>
+                      {d.incidentCount} hit{d.incidentCount !== 1 ? "s" : ""}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </Card>
+      ) : (
+        <Card title="Incident Log">
+          {incidents.length === 0 ? (
+            <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No incidents recorded yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+              {[...incidents].sort((a, b) => new Date(b.date) - new Date(a.date)).map((inc, i) => {
+                const d = driverMap[inc.driver_number] || {};
+                const teamColor = TEAM_COLORS[d.team_name] || `#${d.team_colour || "888"}`;
+                return (
+                  <div key={i} style={{
+                    display: "flex", gap: 12, padding: "12px 0",
+                    borderBottom: i < incidents.length - 1 ? "1px solid #27272a" : "none",
+                    alignItems: "flex-start",
+                  }}>
+                    <div style={{
+                      width: 36, height: 36, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
+                      background: inc.cost >= 1500000 ? "#ef444422" : inc.cost >= 500000 ? "#f9731622" : "#eab30822",
+                      fontSize: 16, flexShrink: 0,
+                    }}>
+                      {inc.cost >= 1500000 ? "💥" : inc.cost >= 500000 ? "⚠️" : "🔧"}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <TeamBar color={teamColor} />
+                        <span style={{ fontWeight: 700, color: "#f4f4f5", fontSize: 13 }}>
+                          {d.name_acronym || `#${inc.driver_number}`}
+                        </span>
+                        <span style={{ fontSize: 10, color: "#52525b" }}>{d.team_name || ""}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#a1a1aa", marginBottom: 4 }}>
+                        {inc.types.join(", ")}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#52525b" }}>
+                        {inc.race} · {inc.session}
+                        {inc.date && ` · ${new Date(inc.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                      </div>
+                    </div>
+                    <div style={{
+                      fontFamily: "monospace", fontWeight: 700, fontSize: 13,
+                      color: inc.cost >= 1500000 ? "#ef4444" : inc.cost >= 500000 ? "#f97316" : "#eab308",
+                      flexShrink: 0,
+                    }}>
+                      {formatCost(inc.cost)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ---- Schedule ----
 
 function Schedule() {
@@ -1147,6 +1537,7 @@ export default function F1Dashboard() {
         <Tab label="Live Session" active={tab === "live"} onClick={() => setTab("live")} />
         <Tab label="Standings" active={tab === "standings"} onClick={() => setTab("standings")} />
         <Tab label="Fantasy" active={tab === "fantasy"} onClick={() => setTab("fantasy")} badge="NEW" />
+        <Tab label="Destructors" active={tab === "destructors"} onClick={() => setTab("destructors")} badge="💥" />
         <Tab label="Schedule" active={tab === "schedule"} onClick={() => setTab("schedule")} />
         <Tab label="Lap Times" active={tab === "laps"} onClick={() => setTab("laps")} />
       </nav>
@@ -1157,6 +1548,7 @@ export default function F1Dashboard() {
             {tab === "live" && <LiveSession sessionKey={sessionKey} drivers={drivers} />}
             {tab === "standings" && <Standings />}
             {tab === "fantasy" && <FantasyPredictor />}
+            {tab === "destructors" && <DestructorsChampionship />}
             {tab === "schedule" && <Schedule />}
             {tab === "laps" && <LapTimes sessionKey={sessionKey} drivers={drivers} />}
           </>
