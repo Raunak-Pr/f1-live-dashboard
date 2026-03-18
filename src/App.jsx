@@ -1375,6 +1375,799 @@ function LapTimes({ sessionKey, drivers }) {
   );
 }
 
+// ---- Head-to-Head Comparison ----
+
+function HeadToHead() {
+  const [meetings, setMeetings] = useState([]);
+  const [selectedMeeting, setSelectedMeeting] = useState(null);
+  const [raceSessions, setRaceSessions] = useState([]);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [sessionDrivers, setSessionDrivers] = useState([]);
+  const [driver1, setDriver1] = useState("");
+  const [driver2, setDriver2] = useState("");
+  const [laps1, setLaps1] = useState([]);
+  const [laps2, setLaps2] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [comparing, setComparing] = useState(false);
+
+  // Load meetings on mount
+  useEffect(() => {
+    async function load() {
+      let m = await f1Fetch("meetings", { year: 2026 });
+      if (!m.length) m = await f1Fetch("meetings", { year: 2025 });
+      setMeetings(m);
+      if (m.length) setSelectedMeeting(m[m.length - 1].meeting_key);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  // Load sessions when meeting changes
+  useEffect(() => {
+    async function load() {
+      if (!selectedMeeting) return;
+      const sess = await f1Fetch("sessions", { meeting_key: selectedMeeting });
+      setRaceSessions(sess);
+      // Default to Race, otherwise last session
+      const race = sess.find(s => (s.session_name || "").toLowerCase() === "race");
+      setSelectedSession(race ? race.session_key : sess.length ? sess[sess.length - 1].session_key : null);
+    }
+    load();
+  }, [selectedMeeting]);
+
+  // Load drivers when session changes
+  useEffect(() => {
+    async function load() {
+      if (!selectedSession) return;
+      const drvs = await f1Fetch("drivers", { session_key: selectedSession });
+      setSessionDrivers(drvs);
+      // Auto-pick first 2 drivers
+      if (drvs.length >= 2) {
+        setDriver1(String(drvs[0].driver_number));
+        setDriver2(String(drvs[1].driver_number));
+      }
+    }
+    load();
+  }, [selectedSession]);
+
+  // Load lap data when drivers or session change
+  useEffect(() => {
+    async function load() {
+      if (!selectedSession || !driver1 || !driver2) return;
+      setComparing(true);
+      const [l1, l2] = await Promise.all([
+        f1Fetch("laps", { session_key: selectedSession, driver_number: driver1 }),
+        f1Fetch("laps", { session_key: selectedSession, driver_number: driver2 }),
+      ]);
+      setLaps1(l1); setLaps2(l2); setComparing(false);
+    }
+    load();
+  }, [selectedSession, driver1, driver2]);
+
+  if (loading) return <LoadingPulse text="Loading Grand Prix data..." />;
+
+  const driverMap = {}; sessionDrivers.forEach(d => driverMap[d.driver_number] = d);
+  const d1 = driverMap[parseInt(driver1)] || {};
+  const d2 = driverMap[parseInt(driver2)] || {};
+  const c1 = TEAM_COLORS[d1.team_name] || `#${d1.team_colour || "e8002d"}`;
+  const c2 = TEAM_COLORS[d2.team_name] || `#${d2.team_colour || "3671C6"}`;
+
+  const validLaps1 = laps1.filter(l => l.lap_duration && !l.is_pit_out_lap);
+  const validLaps2 = laps2.filter(l => l.lap_duration && !l.is_pit_out_lap);
+  const avg1 = validLaps1.length ? validLaps1.reduce((s, l) => s + l.lap_duration, 0) / validLaps1.length : 0;
+  const avg2 = validLaps2.length ? validLaps2.reduce((s, l) => s + l.lap_duration, 0) / validLaps2.length : 0;
+  const best1 = validLaps1.length ? Math.min(...validLaps1.map(l => l.lap_duration)) : 0;
+  const best2 = validLaps2.length ? Math.min(...validLaps2.map(l => l.lap_duration)) : 0;
+  const topSpeed1 = laps1.length ? Math.max(...laps1.map(l => l.st_speed || 0)) : 0;
+  const topSpeed2 = laps2.length ? Math.max(...laps2.map(l => l.st_speed || 0)) : 0;
+
+  function CompareRow({ label, val1, val2, unit, lowerBetter }) {
+    const v1 = parseFloat(val1) || 0, v2 = parseFloat(val2) || 0;
+    const tied = v1 === v2 || (v1 === 0 && v2 === 0);
+    const w1 = !tied && (lowerBetter ? v1 < v2 : v1 > v2);
+    const w2 = !tied && (lowerBetter ? v2 < v1 : v2 > v1);
+    return (
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #27272a" }}>
+        <div style={{ flex: 1, textAlign: "right", fontFamily: "monospace", fontWeight: 700, fontSize: 14, color: w1 ? "#22c55e" : "#a1a1aa" }}>{val1}{unit}</div>
+        <div style={{ width: 120, textAlign: "center", fontSize: 11, color: "#71717a", textTransform: "uppercase", letterSpacing: 1 }}>{label}</div>
+        <div style={{ flex: 1, textAlign: "left", fontFamily: "monospace", fontWeight: 700, fontSize: 14, color: w2 ? "#22c55e" : "#a1a1aa" }}>{val2}{unit}</div>
+      </div>
+    );
+  }
+
+  const selectStyle = {
+    background: "#27272a", color: "#f4f4f5", border: "1px solid #3f3f46",
+    borderRadius: 8, padding: "10px 12px", fontSize: 13, fontWeight: 600,
+    cursor: "pointer", outline: "none", width: "100%", appearance: "auto",
+    WebkitAppearance: "menulist",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Grand Prix Selector */}
+      <Card title="Select Grand Prix">
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 2, minWidth: 180 }}>
+            <div style={{ fontSize: 10, color: "#71717a", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Grand Prix</div>
+            <select value={selectedMeeting || ""} onChange={e => setSelectedMeeting(parseInt(e.target.value))} style={selectStyle}>
+              {meetings.map(m => (
+                <option key={m.meeting_key} value={m.meeting_key}>
+                  {m.meeting_name || m.meeting_official_name} — {m.country_name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <div style={{ fontSize: 10, color: "#71717a", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Session</div>
+            <select value={selectedSession || ""} onChange={e => setSelectedSession(e.target.value)} style={selectStyle}>
+              {raceSessions.map(s => (
+                <option key={s.session_key} value={s.session_key}>{s.session_name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </Card>
+
+      {/* Driver Selectors */}
+      <Card title="Head-to-Head">
+        <div style={{ display: "flex", gap: 12, marginBottom: 20, alignItems: "flex-end" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: c1, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6, fontWeight: 700 }}>Driver 1</div>
+            <select value={driver1} onChange={e => setDriver1(e.target.value)} style={{ ...selectStyle, borderColor: c1, borderWidth: 2 }}>
+              <option value="" disabled>Pick a driver</option>
+              {sessionDrivers.map(d => (
+                <option key={d.driver_number} value={String(d.driver_number)}>
+                  {d.name_acronym} — {d.full_name} ({d.team_name})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", fontWeight: 800, color: "#52525b", fontSize: 18, padding: "0 4px 10px" }}>VS</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: c2, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6, fontWeight: 700 }}>Driver 2</div>
+            <select value={driver2} onChange={e => setDriver2(e.target.value)} style={{ ...selectStyle, borderColor: c2, borderWidth: 2 }}>
+              <option value="" disabled>Pick a driver</option>
+              {sessionDrivers.map(d => (
+                <option key={d.driver_number} value={String(d.driver_number)}>
+                  {d.name_acronym} — {d.full_name} ({d.team_name})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {comparing ? <LoadingPulse text="Comparing drivers..." /> : (!driver1 || !driver2) ? (
+          <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>Select two drivers above to compare.</p>
+        ) : (
+          <>
+            {/* Driver header */}
+            <div style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #27272a" }}>
+              <div style={{ flex: 1, textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+                <TeamBar color={c1} />
+                <span style={{ fontWeight: 800, color: "#f4f4f5", fontSize: 16 }}>{d1.name_acronym || "?"}</span>
+              </div>
+              <div style={{ width: 120, textAlign: "center", fontSize: 10, color: "#52525b" }}>DRIVER</div>
+              <div style={{ flex: 1, textAlign: "left", display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 800, color: "#f4f4f5", fontSize: 16 }}>{d2.name_acronym || "?"}</span>
+                <TeamBar color={c2} />
+              </div>
+            </div>
+
+            <CompareRow label="Best Lap" val1={formatTime(best1)} val2={formatTime(best2)} unit="" lowerBetter />
+            <CompareRow label="Avg Pace" val1={formatTime(avg1)} val2={formatTime(avg2)} unit="" lowerBetter />
+            <CompareRow label="Top Speed" val1={topSpeed1} val2={topSpeed2} unit=" km/h" lowerBetter={false} />
+            <CompareRow label="Laps Done" val1={laps1.length} val2={laps2.length} unit="" lowerBetter={false} />
+
+            {/* Lap-by-lap comparison chart */}
+            {validLaps1.length > 0 && validLaps2.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 10, color: "#71717a", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 10 }}>Lap-by-Lap Comparison</div>
+                <div style={{ display: "flex", gap: 2, alignItems: "flex-end", height: 100, overflow: "hidden" }}>
+                  {validLaps1.slice(0, 40).map((l, i) => {
+                    const l2 = validLaps2[i];
+                    const minT = Math.min(best1, best2) * 0.98;
+                    const maxT = Math.max(avg1, avg2) * 1.02;
+                    const range = maxT - minT || 1;
+                    const h1 = Math.max(5, ((l.lap_duration - minT) / range) * 80);
+                    const h2 = l2 ? Math.max(5, ((l2.lap_duration - minT) / range) * 80) : 0;
+                    return (
+                      <div key={i} style={{ display: "flex", gap: 1, flex: 1 }}>
+                        <div style={{ flex: 1, height: h1, background: c1, borderRadius: "2px 2px 0 0", opacity: 0.8 }} title={`${d1.name_acronym} L${l.lap_number}: ${formatTime(l.lap_duration)}`} />
+                        {l2 && <div style={{ flex: 1, height: h2, background: c2, borderRadius: "2px 2px 0 0", opacity: 0.8 }} title={`${d2.name_acronym} L${l2.lap_number}: ${formatTime(l2.lap_duration)}`} />}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8 }}>
+                  <span style={{ fontSize: 10, color: c1 }}>■ {d1.name_acronym}</span>
+                  <span style={{ fontSize: 10, color: c2 }}>■ {d2.name_acronym}</span>
+                </div>
+              </div>
+            )}
+
+            {validLaps1.length === 0 && validLaps2.length === 0 && (
+              <p style={{ color: "#52525b", fontSize: 12, textAlign: "center", padding: 16 }}>No lap data available for this session yet.</p>
+            )}
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---- Team Radio ----
+
+function TeamRadio({ sessionKey, drivers }) {
+  const [radios, setRadios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [playing, setPlaying] = useState(null);
+  const audioRef = useCallback(node => { if (node) node.onended = () => setPlaying(null); }, []);
+
+  useEffect(() => {
+    async function load() {
+      if (!sessionKey) { setLoading(false); return; }
+      const data = await f1Fetch("team_radio", { session_key: sessionKey });
+      setRadios(data.sort((a, b) => new Date(b.date) - new Date(a.date)));
+      setLoading(false);
+    }
+    load();
+  }, [sessionKey]);
+
+  if (loading) return <LoadingPulse text="Tuning into team radio..." />;
+
+  const driverMap = {}; drivers.forEach(d => driverMap[d.driver_number] = d);
+
+  const playAudio = (url, idx) => {
+    if (playing === idx) { setPlaying(null); return; }
+    setPlaying(idx);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Card title={`Team Radio — ${radios.length} messages`}>
+        {radios.length === 0 ? (
+          <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No team radio available for this session.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {radios.slice(0, 30).map((r, i) => {
+              const d = driverMap[r.driver_number] || {};
+              const teamColor = TEAM_COLORS[d.team_name] || `#${d.team_colour || "888"}`;
+              const isPlaying = playing === i;
+              return (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center", gap: 12, padding: "10px 0",
+                  borderBottom: i < Math.min(radios.length, 30) - 1 ? "1px solid #27272a" : "none",
+                }}>
+                  <button onClick={() => playAudio(r.recording_url, i)} style={{
+                    width: 36, height: 36, borderRadius: "50%", border: "none", cursor: "pointer",
+                    background: isPlaying ? teamColor : "#27272a", color: "#fff",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 14, flexShrink: 0, transition: "all 0.2s",
+                  }}>
+                    {isPlaying ? "⏸" : "▶"}
+                  </button>
+                  <TeamBar color={teamColor} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, color: "#f4f4f5", fontSize: 13 }}>{d.name_acronym || `#${r.driver_number}`}</div>
+                    <div style={{ fontSize: 10, color: "#52525b" }}>
+                      {d.team_name || ""} · {r.date ? new Date(r.date).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}
+                    </div>
+                  </div>
+                  <a href={r.recording_url} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "#52525b", textDecoration: "none" }}>🔗</a>
+                  {isPlaying && <audio ref={audioRef} src={r.recording_url} autoPlay style={{ display: "none" }} />}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---- Tire Strategy Visualizer ----
+
+function TireStrategy({ sessionKey, drivers }) {
+  const [stints, setStints] = useState([]);
+  const [laps, setLaps] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      if (!sessionKey) { setLoading(false); return; }
+      const [s, l] = await Promise.all([
+        f1Fetch("stints", { session_key: sessionKey }),
+        f1Fetch("laps", { session_key: sessionKey }),
+      ]);
+      setStints(s); setLaps(l); setLoading(false);
+    }
+    load();
+  }, [sessionKey]);
+
+  if (loading) return <LoadingPulse text="Loading tire strategies..." />;
+
+  const driverMap = {}; drivers.forEach(d => driverMap[d.driver_number] = d);
+  const maxLap = laps.reduce((m, l) => Math.max(m, l.lap_number || 0), 0) || 57;
+
+  // Group stints by driver
+  const driverStints = {};
+  stints.forEach(s => {
+    if (!driverStints[s.driver_number]) driverStints[s.driver_number] = [];
+    driverStints[s.driver_number].push(s);
+  });
+
+  // Sort drivers by final position or stint data
+  const driverList = Object.keys(driverStints).sort((a, b) => {
+    const sa = driverStints[a], sb = driverStints[b];
+    return (sa[0]?.lap_start || 99) - (sb[0]?.lap_start || 99);
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Card title="Tire Strategy">
+        {driverList.length === 0 ? (
+          <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No stint data available.</p>
+        ) : (
+          <>
+            {/* Legend */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+              {Object.entries(TIRE_COLORS).map(([name, color]) => (
+                <div key={name} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: "50%", background: color, border: name === "HARD" ? "1px solid #666" : "none" }} />
+                  <span style={{ fontSize: 10, color: "#71717a" }}>{name}</span>
+                </div>
+              ))}
+            </div>
+            {/* Strategy bars */}
+            {driverList.map((dn, i) => {
+              const d = driverMap[parseInt(dn)] || {};
+              const teamColor = TEAM_COLORS[d.team_name] || `#${d.team_colour || "888"}`;
+              const dStints = driverStints[dn].sort((a, b) => a.stint_number - b.stint_number);
+              return (
+                <div key={dn} style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: "6px 0",
+                  borderBottom: i < driverList.length - 1 ? "1px solid #1a1a1e" : "none",
+                }}>
+                  <div style={{ width: 45, flexShrink: 0 }}>
+                    <span style={{ fontWeight: 700, color: "#f4f4f5", fontSize: 12 }}>{d.name_acronym || `#${dn}`}</span>
+                  </div>
+                  <div style={{ flex: 1, display: "flex", height: 20, borderRadius: 4, overflow: "hidden", background: "#1a1a1e" }}>
+                    {dStints.map((s, j) => {
+                      const start = s.lap_start || 0;
+                      const end = s.lap_end || maxLap;
+                      const width = ((end - start) / maxLap) * 100;
+                      const compound = (s.compound || "").toUpperCase();
+                      const color = TIRE_COLORS[compound] || "#555";
+                      return (
+                        <div key={j} style={{
+                          width: `${width}%`, height: "100%", background: color,
+                          borderRight: j < dStints.length - 1 ? "2px solid #09090b" : "none",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 9, fontWeight: 700,
+                          color: compound === "HARD" || compound === "MEDIUM" ? "#111" : "#fff",
+                          minWidth: width > 5 ? 0 : 4,
+                        }} title={`${compound} | Laps ${start}-${end} (${end - start} laps)`}>
+                          {width > 8 ? `${TIRE_LABELS[compound] || "?"} ${end - start}` : ""}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <span style={{ fontSize: 9, color: "#52525b", width: 30, textAlign: "right" }}>{dStints.reduce((t, s) => t + ((s.lap_end || maxLap) - (s.lap_start || 0)), 0)}L</span>
+                </div>
+              );
+            })}
+            {/* Lap scale */}
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, paddingLeft: 53 }}>
+              {[0, Math.round(maxLap / 4), Math.round(maxLap / 2), Math.round(maxLap * 3 / 4), maxLap].map(l => (
+                <span key={l} style={{ fontSize: 9, color: "#3f3f46" }}>L{l}</span>
+              ))}
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---- Speed Trap Leaderboard ----
+
+function SpeedTrap({ sessionKey, drivers }) {
+  const [laps, setLaps] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      if (!sessionKey) { setLoading(false); return; }
+      setLaps(await f1Fetch("laps", { session_key: sessionKey }));
+      setLoading(false);
+    }
+    load();
+  }, [sessionKey]);
+
+  if (loading) return <LoadingPulse text="Checking speed traps..." />;
+
+  const driverMap = {}; drivers.forEach(d => driverMap[d.driver_number] = d);
+
+  // Get top speed per driver
+  const topSpeeds = {};
+  laps.forEach(l => {
+    if (l.st_speed && (!topSpeeds[l.driver_number] || l.st_speed > topSpeeds[l.driver_number].speed)) {
+      topSpeeds[l.driver_number] = { speed: l.st_speed, lap: l.lap_number, i1: l.i1_speed, i2: l.i2_speed };
+    }
+  });
+
+  const sorted = Object.entries(topSpeeds)
+    .map(([dn, data]) => ({ driver_number: parseInt(dn), ...data }))
+    .sort((a, b) => b.speed - a.speed);
+
+  const maxSpeed = sorted.length ? sorted[0].speed : 350;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Card title="Speed Trap Leaderboard">
+        {sorted.length === 0 ? (
+          <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No speed data available.</p>
+        ) : sorted.map((s, i) => {
+          const d = driverMap[s.driver_number] || {};
+          const teamColor = TEAM_COLORS[d.team_name] || `#${d.team_colour || "888"}`;
+          const pct = (s.speed / maxSpeed) * 100;
+          return (
+            <div key={s.driver_number} style={{
+              display: "flex", alignItems: "center", gap: 12, padding: "8px 0",
+              borderBottom: i < sorted.length - 1 ? "1px solid #27272a" : "none",
+            }}>
+              <span style={{ width: 24, fontWeight: 800, fontSize: 14, color: i < 3 ? "#fff" : "#888", textAlign: "right" }}>{i + 1}</span>
+              <TeamBar color={teamColor} />
+              <span style={{ width: 40, fontWeight: 700, color: "#f4f4f5", fontSize: 12 }}>{d.name_acronym || `#${s.driver_number}`}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ height: 8, borderRadius: 4, background: "#2a2a2e", overflow: "hidden" }}>
+                  <div style={{
+                    width: `${pct}%`, height: "100%", borderRadius: 4,
+                    background: i === 0 ? "#e8002d" : i < 3 ? "#ff8000" : teamColor,
+                    transition: "width 0.5s",
+                  }} />
+                </div>
+              </div>
+              <div style={{ textAlign: "right", minWidth: 80 }}>
+                <span style={{
+                  fontFamily: "monospace", fontWeight: 800, fontSize: 16,
+                  color: i === 0 ? "#e8002d" : i < 3 ? "#ff8000" : "#d4d4d8",
+                }}>{s.speed}</span>
+                <span style={{ fontSize: 10, color: "#52525b" }}> km/h</span>
+              </div>
+              <span style={{ fontSize: 9, color: "#3f3f46", width: 30 }}>L{s.lap}</span>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ---- Weather Tracker ----
+
+function WeatherTracker({ sessionKey }) {
+  const [weather, setWeather] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      if (!sessionKey) { setLoading(false); return; }
+      setWeather(await f1Fetch("weather", { session_key: sessionKey }));
+      setLoading(false);
+    }
+    load();
+  }, [sessionKey]);
+
+  if (loading) return <LoadingPulse text="Checking conditions..." />;
+
+  const latest = weather.length ? weather[weather.length - 1] : null;
+  // Sample weather at intervals for the chart
+  const samples = weather.filter((_, i) => i % Math.max(1, Math.floor(weather.length / 20)) === 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Current conditions */}
+      {latest && (
+        <Card title="Current Conditions">
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 16 }}>
+            {[
+              { label: "Air Temp", value: `${latest.air_temperature}°C`, icon: "🌡️" },
+              { label: "Track Temp", value: `${latest.track_temperature}°C`, icon: "🛣️" },
+              { label: "Humidity", value: `${latest.humidity}%`, icon: "💧" },
+              { label: "Wind Speed", value: `${latest.wind_speed} km/h`, icon: "💨" },
+              { label: "Wind Dir", value: `${latest.wind_direction}°`, icon: "🧭" },
+              { label: "Rainfall", value: latest.rainfall ? "Yes" : "No", icon: latest.rainfall ? "🌧️" : "☀️" },
+              { label: "Pressure", value: `${latest.pressure} mbar`, icon: "📊" },
+            ].map(item => (
+              <div key={item.label} style={{ background: "#27272a", borderRadius: 8, padding: 12, textAlign: "center" }}>
+                <div style={{ fontSize: 20, marginBottom: 4 }}>{item.icon}</div>
+                <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#f4f4f5", fontSize: 16 }}>{item.value}</div>
+                <div style={{ fontSize: 9, color: "#71717a", textTransform: "uppercase", letterSpacing: 1, marginTop: 2 }}>{item.label}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Temperature timeline */}
+      {samples.length > 2 && (
+        <Card title="Temperature Over Session">
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 100 }}>
+            {samples.map((w, i) => {
+              const minT = Math.min(...samples.map(s => s.air_temperature || 20)) - 2;
+              const maxT = Math.max(...samples.map(s => s.track_temperature || 40)) + 2;
+              const airH = ((w.air_temperature - minT) / (maxT - minT)) * 90;
+              const trackH = ((w.track_temperature - minT) / (maxT - minT)) * 90;
+              return (
+                <div key={i} style={{ flex: 1, display: "flex", gap: 1, alignItems: "flex-end" }}>
+                  <div style={{ flex: 1, height: airH, background: "#3b82f6", borderRadius: "2px 2px 0 0", opacity: 0.7 }} title={`Air: ${w.air_temperature}°C`} />
+                  <div style={{ flex: 1, height: trackH, background: "#ef4444", borderRadius: "2px 2px 0 0", opacity: 0.7 }} title={`Track: ${w.track_temperature}°C`} />
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8 }}>
+            <span style={{ fontSize: 10, color: "#3b82f6" }}>■ Air Temp</span>
+            <span style={{ fontSize: 10, color: "#ef4444" }}>■ Track Temp</span>
+          </div>
+        </Card>
+      )}
+
+      {!latest && <Card><p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No weather data available for this session.</p></Card>}
+    </div>
+  );
+}
+
+// ---- Qualifying Shootout ----
+
+function QualiShootout({ drivers }) {
+  const [sessions, setSessions] = useState([]);
+  const [qualiLaps, setQualiLaps] = useState([]);
+  const [qualiDrivers, setQualiDrivers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      // Find most recent qualifying session
+      let meetings = await f1Fetch("meetings", { year: 2026 });
+      if (!meetings.length) meetings = await f1Fetch("meetings", { year: 2025 });
+
+      for (let i = meetings.length - 1; i >= 0; i--) {
+        const sess = await f1Fetch("sessions", { meeting_key: meetings[i].meeting_key });
+        const quali = sess.find(s => (s.session_name || "").toLowerCase().includes("quali"));
+        if (quali) {
+          const [laps, drvs] = await Promise.all([
+            f1Fetch("laps", { session_key: quali.session_key }),
+            f1Fetch("drivers", { session_key: quali.session_key }),
+          ]);
+          setQualiLaps(laps);
+          setQualiDrivers(drvs);
+          setSessions([{ ...quali, meeting: meetings[i] }]);
+          break;
+        }
+      }
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  if (loading) return <LoadingPulse text="Loading qualifying data..." />;
+
+  const driverMap = {}; qualiDrivers.forEach(d => driverMap[d.driver_number] = d);
+
+  // Get best lap per driver
+  const bestLaps = {};
+  qualiLaps.forEach(l => {
+    if (l.lap_duration && (!bestLaps[l.driver_number] || l.lap_duration < bestLaps[l.driver_number].time)) {
+      bestLaps[l.driver_number] = { time: l.lap_duration, lap: l.lap_number };
+    }
+  });
+
+  const sorted = Object.entries(bestLaps)
+    .map(([dn, data]) => ({ driver_number: parseInt(dn), ...data }))
+    .sort((a, b) => a.time - b.time);
+
+  const poleTime = sorted.length ? sorted[0].time : 0;
+
+  // Approximate Q1/Q2/Q3 splits (top 10 = Q3, 11-15 = Q2, 16+ = Q1)
+  const q3 = sorted.slice(0, 10);
+  const q2 = sorted.slice(10, 15);
+  const q1 = sorted.slice(15);
+
+  function QSection({ label, drivers: qDrivers, color, startPos }) {
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{
+          fontSize: 11, fontWeight: 800, color, textTransform: "uppercase", letterSpacing: 2,
+          marginBottom: 8, display: "flex", alignItems: "center", gap: 8,
+        }}>
+          <span style={{ width: 32, height: 2, background: color, borderRadius: 1 }} />
+          {label}
+        </div>
+        {qDrivers.map((q, i) => {
+          const d = driverMap[q.driver_number] || {};
+          const teamColor = TEAM_COLORS[d.team_name] || `#${d.team_colour || "888"}`;
+          const gap = q.time - poleTime;
+          const pos = startPos + i;
+          return (
+            <div key={q.driver_number} style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "6px 0",
+              borderBottom: i < qDrivers.length - 1 ? "1px solid #1a1a1e" : "none",
+            }}>
+              <span style={{ width: 24, fontWeight: 800, fontSize: 14, color: pos <= 3 ? "#fff" : "#888", textAlign: "right" }}>{pos}</span>
+              <TeamBar color={teamColor} />
+              <span style={{ width: 40, fontWeight: 700, color: "#f4f4f5", fontSize: 12 }}>{d.name_acronym || `#${q.driver_number}`}</span>
+              <span style={{ flex: 1, fontFamily: "monospace", color: pos === 1 ? "#a855f7" : "#d4d4d8", fontWeight: pos === 1 ? 700 : 400, fontSize: 13 }}>{formatTime(q.time)}</span>
+              <span style={{ fontFamily: "monospace", fontSize: 11, color: gap === 0 ? "#22c55e" : "#71717a" }}>{gap === 0 ? "POLE" : `+${gap.toFixed(3)}`}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  const meetingName = sessions.length ? (sessions[0].meeting?.meeting_name || sessions[0].country_name || "") : "";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Card title={`Qualifying — ${meetingName}`}>
+        {sorted.length === 0 ? (
+          <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No qualifying data available.</p>
+        ) : (
+          <>
+            {q3.length > 0 && <QSection label="Q3 — Pole Shootout" drivers={q3} color="#a855f7" startPos={1} />}
+            {q2.length > 0 && <QSection label="Q2 — Eliminated" drivers={q2} color="#eab308" startPos={11} />}
+            {q1.length > 0 && <QSection label="Q1 — Eliminated" drivers={q1} color="#ef4444" startPos={16} />}
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---- Race Replay Timeline ----
+
+function RaceReplay({ sessionKey, drivers }) {
+  const [positions, setPositions] = useState([]);
+  const [raceControl, setRaceControl] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [currentLap, setCurrentLap] = useState(1);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      if (!sessionKey) { setLoading(false); return; }
+      const [pos, rc] = await Promise.all([
+        f1Fetch("position", { session_key: sessionKey }),
+        f1Fetch("race_control", { session_key: sessionKey }),
+      ]);
+      setPositions(pos);
+      setRaceControl(rc.filter(r => r.flag || (r.message && !r.message.toLowerCase().includes("deleted"))));
+      setLoading(false);
+    }
+    load();
+  }, [sessionKey]);
+
+  // Auto-play
+  useEffect(() => {
+    if (!isPlaying) return;
+    const id = setInterval(() => {
+      setCurrentLap(prev => {
+        if (prev >= maxLap) { setIsPlaying(false); return prev; }
+        return prev + 1;
+      });
+    }, 500);
+    return () => clearInterval(id);
+  }, [isPlaying]);
+
+  if (loading) return <LoadingPulse text="Loading race data..." />;
+
+  const driverMap = {}; drivers.forEach(d => driverMap[d.driver_number] = d);
+
+  // Group positions by approximate lap (using timestamps)
+  const allDates = positions.map(p => new Date(p.date).getTime()).filter(Boolean);
+  const minDate = Math.min(...allDates);
+  const maxDate = Math.max(...allDates);
+  const totalDuration = maxDate - minDate;
+
+  // Build position snapshots per "lap"
+  const maxLap = 57; // approximate
+  const lapDuration = totalDuration / maxLap;
+
+  function getPositionsAtLap(lap) {
+    const targetTime = minDate + (lap / maxLap) * totalDuration;
+    const latestPerDriver = {};
+    positions.forEach(p => {
+      const t = new Date(p.date).getTime();
+      if (t <= targetTime) {
+        if (!latestPerDriver[p.driver_number] || t > new Date(latestPerDriver[p.driver_number].date).getTime()) {
+          latestPerDriver[p.driver_number] = p;
+        }
+      }
+    });
+    return Object.values(latestPerDriver).sort((a, b) => (a.position || 99) - (b.position || 99));
+  }
+
+  const currentPositions = getPositionsAtLap(currentLap);
+
+  // Key events near current lap
+  const events = raceControl.filter(rc => {
+    if (!rc.date) return false;
+    const t = new Date(rc.date).getTime();
+    const eventLap = Math.round(((t - minDate) / totalDuration) * maxLap);
+    return Math.abs(eventLap - currentLap) <= 1;
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Card title="Race Replay">
+        {positions.length === 0 ? (
+          <p style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 20 }}>No position data available for replay.</p>
+        ) : (
+          <>
+            {/* Controls */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <button onClick={() => setIsPlaying(!isPlaying)} style={{
+                width: 36, height: 36, borderRadius: "50%", border: "none", cursor: "pointer",
+                background: isPlaying ? "#e8002d" : "#27272a", color: "#fff", fontSize: 14,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>{isPlaying ? "⏸" : "▶"}</button>
+              <button onClick={() => setCurrentLap(1)} style={{
+                background: "#27272a", border: "none", color: "#a1a1aa", borderRadius: 6,
+                padding: "6px 12px", fontSize: 11, cursor: "pointer",
+              }}>⏮ Reset</button>
+              <div style={{ flex: 1 }}>
+                <input type="range" min={1} max={maxLap} value={currentLap}
+                  onChange={e => { setCurrentLap(parseInt(e.target.value)); setIsPlaying(false); }}
+                  style={{ width: "100%", accentColor: "#e8002d" }} />
+              </div>
+              <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#f4f4f5", fontSize: 14, minWidth: 60 }}>
+                Lap {currentLap}/{maxLap}
+              </span>
+            </div>
+
+            {/* Events at current lap */}
+            {events.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                {events.map((e, i) => (
+                  <div key={i} style={{
+                    background: e.flag === "YELLOW" ? "#eab30822" : e.flag === "RED" ? "#ef444422" : "#27272a",
+                    padding: "6px 12px", borderRadius: 6, fontSize: 11, color: "#d4d4d8", marginBottom: 4,
+                  }}>
+                    {e.flag && <span style={{
+                      color: e.flag === "YELLOW" ? "#eab308" : e.flag === "RED" ? "#ef4444" : "#22c55e",
+                      fontWeight: 700, marginRight: 6,
+                    }}>🚩 {e.flag}</span>}
+                    {e.message}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Position tower */}
+            {currentPositions.map((p, i) => {
+              const d = driverMap[p.driver_number] || {};
+              const teamColor = TEAM_COLORS[d.team_name] || `#${d.team_colour || "888"}`;
+              return (
+                <div key={p.driver_number} style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
+                  borderBottom: i < currentPositions.length - 1 ? "1px solid #1a1a1e" : "none",
+                }}>
+                  <span style={{ width: 24, fontWeight: 800, fontSize: 13, color: i < 3 ? "#fff" : "#888", textAlign: "right" }}>{p.position}</span>
+                  <div style={{ width: 3, height: 18, borderRadius: 1, background: teamColor }} />
+                  <span style={{ fontWeight: 600, color: "#f4f4f5", fontSize: 12 }}>{d.name_acronym || `#${p.driver_number}`}</span>
+                  <div style={{ flex: 1, height: 4, borderRadius: 2, background: teamColor, opacity: 0.3 }} />
+                </div>
+              );
+            })}
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 // ---- Main App ----
 
 export default function F1Dashboard() {
@@ -1384,6 +2177,7 @@ export default function F1Dashboard() {
   const [sessions, setSessions] = useState([]);
   const [selectedSession, setSelectedSession] = useState(null);
   const [initLoading, setInitLoading] = useState(true);
+  const [showMore, setShowMore] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1533,13 +2327,57 @@ export default function F1Dashboard() {
         )}
       </header>
 
-      <nav style={{ display: "flex", gap: 4, padding: "8px 24px", borderBottom: "1px solid #1a1a1e", overflowX: "auto" }}>
-        <Tab label="Live Session" active={tab === "live"} onClick={() => setTab("live")} />
+      <nav style={{ display: "flex", gap: 4, padding: "8px 24px", borderBottom: "1px solid #1a1a1e", overflowX: "auto", flexWrap: "nowrap", alignItems: "center" }}>
+        <Tab label="Live" active={tab === "live"} onClick={() => setTab("live")} />
         <Tab label="Standings" active={tab === "standings"} onClick={() => setTab("standings")} />
-        <Tab label="Fantasy" active={tab === "fantasy"} onClick={() => setTab("fantasy")} badge="NEW" />
+        <Tab label="H2H" active={tab === "h2h"} onClick={() => setTab("h2h")} />
+        <Tab label="Strategy" active={tab === "strategy"} onClick={() => setTab("strategy")} />
+        <Tab label="Fantasy" active={tab === "fantasy"} onClick={() => setTab("fantasy")} />
         <Tab label="Destructors" active={tab === "destructors"} onClick={() => setTab("destructors")} badge="💥" />
-        <Tab label="Schedule" active={tab === "schedule"} onClick={() => setTab("schedule")} />
-        <Tab label="Lap Times" active={tab === "laps"} onClick={() => setTab("laps")} />
+
+        {/* More dropdown */}
+        <div style={{ position: "relative" }}>
+          <button onClick={() => setShowMore(!showMore)} style={{
+            padding: "8px 16px", background: ["speed","quali","radio","replay","weather","schedule","laps"].includes(tab) ? "#e8002d" : "transparent",
+            color: ["speed","quali","radio","replay","weather","schedule","laps"].includes(tab) ? "#fff" : "#999",
+            border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 500,
+            letterSpacing: 0.5, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4,
+          }}>
+            More ▾
+          </button>
+          {showMore && (
+            <>
+              {/* Backdrop to close dropdown */}
+              <div onClick={() => setShowMore(false)} style={{ position: "fixed", inset: 0, zIndex: 98 }} />
+              <div style={{
+                position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 99,
+                background: "#18181b", border: "1px solid #27272a", borderRadius: 10,
+                padding: "6px", minWidth: 180, boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+              }}>
+                {[
+                  { id: "speed", label: "Speed Traps", icon: "⚡" },
+                  { id: "quali", label: "Qualifying", icon: "🏁" },
+                  { id: "radio", label: "Team Radio", icon: "📻" },
+                  { id: "replay", label: "Race Replay", icon: "▶️" },
+                  { id: "weather", label: "Weather", icon: "🌤️" },
+                  { id: "schedule", label: "Schedule", icon: "📅" },
+                  { id: "laps", label: "Lap Times", icon: "⏱️" },
+                ].map(item => (
+                  <button key={item.id} onClick={() => { setTab(item.id); setShowMore(false); }} style={{
+                    display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px",
+                    background: tab === item.id ? "#e8002d22" : "transparent",
+                    color: tab === item.id ? "#e8002d" : "#d4d4d8",
+                    border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 500,
+                    textAlign: "left",
+                  }}>
+                    <span style={{ fontSize: 15 }}>{item.icon}</span>
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </nav>
 
       <main style={{ maxWidth: 960, margin: "0 auto", padding: "20px 24px" }}>
@@ -1547,6 +2385,13 @@ export default function F1Dashboard() {
           <>
             {tab === "live" && <LiveSession sessionKey={sessionKey} drivers={drivers} />}
             {tab === "standings" && <Standings />}
+            {tab === "h2h" && <HeadToHead />}
+            {tab === "strategy" && <TireStrategy sessionKey={sessionKey} drivers={drivers} />}
+            {tab === "speed" && <SpeedTrap sessionKey={sessionKey} drivers={drivers} />}
+            {tab === "quali" && <QualiShootout drivers={drivers} />}
+            {tab === "radio" && <TeamRadio sessionKey={sessionKey} drivers={drivers} />}
+            {tab === "replay" && <RaceReplay sessionKey={sessionKey} drivers={drivers} />}
+            {tab === "weather" && <WeatherTracker sessionKey={sessionKey} />}
             {tab === "fantasy" && <FantasyPredictor />}
             {tab === "destructors" && <DestructorsChampionship />}
             {tab === "schedule" && <Schedule />}
